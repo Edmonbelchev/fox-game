@@ -1,43 +1,45 @@
 import { useState, useEffect, useRef } from 'react';
 import { database } from '../../firebase/config';
-import { ref, push, onValue, set } from 'firebase/database';
+import { ref, push, onValue } from 'firebase/database';
 import Avatar from '../common/Avatar';
+import EmojiPicker from 'emoji-picker-react';
+import { formatDistanceToNow } from 'date-fns';
 
 export default function GameChat({ gameId, currentUser, isSpectator = false }) {
   const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState('');
-  const [isVoiceConnected, setIsVoiceConnected] = useState(false);
-  const messagesEndRef = useRef(null);
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [error, setError] = useState(null);
-
-  // Voice chat state
-  const [stream, setStream] = useState(null);
-  const [isMuted, setIsMuted] = useState(false);
+  const messagesEndRef = useRef(null);
+  const chatContainerRef = useRef(null);
 
   const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    // Only auto-scroll if user is near bottom
+    const container = chatContainerRef.current;
+    if (container) {
+      const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 100;
+      if (isNearBottom) {
+        messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+      }
+    }
   };
 
   useEffect(() => {
-    // Listen for chat messages
     const messagesRef = ref(database, `games/${gameId}/messages`);
     const unsubscribe = onValue(messagesRef, (snapshot) => {
       const data = snapshot.val();
       if (data) {
-        const messagesList = Object.values(data);
+        const messagesList = Object.entries(data).map(([id, message]) => ({
+          id,
+          ...message,
+        }));
         setMessages(messagesList);
         scrollToBottom();
       }
     });
 
-    return () => {
-      unsubscribe();
-      // Clean up voice chat
-      if (stream) {
-        stream.getTracks().forEach(track => track.stop());
-      }
-    };
-  }, [gameId, stream]);
+    return () => unsubscribe();
+  }, [gameId]);
 
   const sendMessage = async (e) => {
     e.preventDefault();
@@ -54,140 +56,136 @@ export default function GameChat({ gameId, currentUser, isSpectator = false }) {
         isSpectator
       });
       setNewMessage('');
+      setShowEmojiPicker(false);
     } catch (error) {
       console.error('Error sending message:', error);
       setError('Failed to send message');
     }
   };
 
-  // Voice chat functions
-  const startVoiceChat = async () => {
-    try {
-      const mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      setStream(mediaStream);
-      setIsVoiceConnected(true);
-      
-      // Here you would typically connect to a WebRTC service
-      // For now, we'll just show that the microphone is active
-      console.log('Voice chat started');
-    } catch (error) {
-      console.error('Error starting voice chat:', error);
-      setError('Failed to start voice chat');
-    }
+  const onEmojiClick = (emojiData) => {
+    setNewMessage(prev => prev + emojiData.emoji);
+    setShowEmojiPicker(false);
   };
 
-  const toggleMute = () => {
-    if (stream) {
-      stream.getAudioTracks().forEach(track => {
-        track.enabled = !track.enabled;
-      });
-      setIsMuted(!isMuted);
-    }
+  const groupMessagesByDate = (messages) => {
+    const groups = {};
+    messages.forEach(message => {
+      const date = new Date(message.timestamp).toLocaleDateString();
+      if (!groups[date]) {
+        groups[date] = [];
+      }
+      groups[date].push(message);
+    });
+    return groups;
   };
 
-  const stopVoiceChat = () => {
-    if (stream) {
-      stream.getTracks().forEach(track => track.stop());
-      setStream(null);
-      setIsVoiceConnected(false);
-    }
-  };
+  const messageGroups = groupMessagesByDate(messages);
 
   return (
-    <div className="flex flex-col h-full">
-      {/* Voice Chat Controls */}
-      <div className="bg-gray-100 p-4 rounded-t-lg">
-        <div className="flex items-center justify-between">
-          <h3 className="font-bold text-gray-700">Voice Channel</h3>
-          <div className="flex space-x-2">
-            {!isVoiceConnected ? (
-              <button
-                onClick={startVoiceChat}
-                className="px-4 py-2 bg-green-500 text-white rounded hover:bg-green-600 transition"
-              >
-                Join Voice
-              </button>
-            ) : (
-              <>
-                <button
-                  onClick={toggleMute}
-                  className={`px-4 py-2 ${isMuted ? 'bg-yellow-500' : 'bg-blue-500'} text-white rounded hover:opacity-90 transition`}
-                >
-                  {isMuted ? 'Unmute' : 'Mute'}
-                </button>
-                <button
-                  onClick={stopVoiceChat}
-                  className="px-4 py-2 bg-red-500 text-white rounded hover:bg-red-600 transition"
-                >
-                  Leave Voice
-                </button>
-              </>
-            )}
-          </div>
-        </div>
+    <div className="flex flex-col h-full bg-gray-50">
+      {/* Chat Header */}
+      <div className="px-4 py-3 bg-white border-b border-gray-200">
+        <h3 className="text-lg font-semibold text-gray-800">Game Chat</h3>
       </div>
 
-      {/* Chat Messages */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-white">
-        {messages.map((message, index) => (
-          <div
-            key={index}
-            className={`flex items-start space-x-3 ${
-              message.userId === currentUser.uid ? 'justify-end' : ''
-            }`}
-          >
-            {message.userId !== currentUser.uid && (
-              <Avatar
-                user={{
-                  displayName: message.userName,
-                  photoURL: message.userPhoto
-                }}
-                size="sm"
-              />
-            )}
-            <div
-              className={`flex flex-col ${
-                message.userId === currentUser.uid ? 'items-end' : 'items-start'
-              }`}
-            >
-              <span className="text-xs text-gray-500">{message.userName}</span>
+      {/* Messages Container */}
+      <div 
+        ref={chatContainerRef}
+        className="flex-1 overflow-y-auto p-4 space-y-6"
+      >
+        {Object.entries(messageGroups).map(([date, groupMessages]) => (
+          <div key={date} className="space-y-4">
+            <div className="flex items-center">
+              <div className="flex-1 border-t border-gray-200"></div>
+              <span className="px-3 text-xs text-gray-500 bg-gray-50">{date}</span>
+              <div className="flex-1 border-t border-gray-200"></div>
+            </div>
+
+            {groupMessages.map((message) => (
               <div
-                className={`px-4 py-2 rounded-lg ${
-                  message.userId === currentUser.uid
-                    ? 'bg-blue-500 text-white'
-                    : 'bg-gray-100 text-gray-800'
+                key={message.id}
+                className={`flex items-start space-x-2 ${
+                  message.userId === currentUser.uid ? 'justify-end' : 'justify-start'
                 }`}
               >
-                {message.text}
+                {message.userId !== currentUser.uid && (
+                  <Avatar
+                    user={{
+                      displayName: message.userName,
+                      photoURL: message.userPhoto
+                    }}
+                    size="sm"
+                  />
+                )}
+                <div
+                  className={`flex flex-col ${
+                    message.userId === currentUser.uid ? 'items-end' : 'items-start'
+                  }`}
+                >
+                  <div className="flex items-center space-x-2">
+                    <span className="text-xs text-gray-500">{message.userName}</span>
+                    <span className="text-xs text-gray-400">
+                      {formatDistanceToNow(message.timestamp, { addSuffix: true })}
+                    </span>
+                  </div>
+                  <div
+                    className={`px-4 py-2 rounded-2xl max-w-md break-words ${
+                      message.userId === currentUser.uid
+                        ? 'bg-blue-500 text-white rounded-tr-none'
+                        : 'bg-white border border-gray-200 rounded-tl-none'
+                    }`}
+                  >
+                    {message.text}
+                  </div>
+                </div>
               </div>
-            </div>
+            ))}
           </div>
         ))}
         <div ref={messagesEndRef} />
       </div>
 
       {/* Chat Input */}
-      <form onSubmit={sendMessage} className="p-4 bg-gray-100 rounded-b-lg">
-        <div className="flex space-x-2">
-          <input
-            type="text"
-            value={newMessage}
-            onChange={(e) => setNewMessage(e.target.value)}
-            placeholder="Type a message..."
-            className="flex-1 px-4 py-2 rounded border border-gray-300 focus:outline-none focus:border-blue-500"
-          />
-          <button
-            type="submit"
-            className="px-6 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 transition"
-          >
-            Send
-          </button>
-        </div>
-      </form>
+      <div className="p-4 bg-white border-t border-gray-200">
+        <form onSubmit={sendMessage} className="relative">
+          <div className="flex space-x-2">
+            <button
+              type="button"
+              onClick={() => setShowEmojiPicker(!showEmojiPicker)}
+              className="p-2 text-gray-500 hover:text-gray-700 transition"
+            >
+              😊
+            </button>
+            <input
+              type="text"
+              value={newMessage}
+              onChange={(e) => setNewMessage(e.target.value)}
+              placeholder="Type a message..."
+              className="flex-1 px-4 py-2 bg-gray-100 rounded-full focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white"
+            />
+            <button
+              type="submit"
+              disabled={!newMessage.trim()}
+              className={`px-4 py-2 rounded-full transition ${
+                newMessage.trim()
+                  ? 'bg-blue-500 hover:bg-blue-600 text-white'
+                  : 'bg-gray-200 text-gray-400 cursor-not-allowed'
+              }`}
+            >
+              Send
+            </button>
+          </div>
+          {showEmojiPicker && (
+            <div className="absolute bottom-full right-0 mb-2">
+              <EmojiPicker onEmojiClick={onEmojiClick} />
+            </div>
+          )}
+        </form>
+      </div>
 
-      {/* Error Display */}
       {error && (
-        <div className="p-2 text-red-500 text-sm text-center">
+        <div className="p-2 text-sm text-red-500 bg-red-50 text-center">
           {error}
         </div>
       )}

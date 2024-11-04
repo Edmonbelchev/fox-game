@@ -5,6 +5,7 @@ import { ref, onValue, update, remove, push } from 'firebase/database';
 import { useAuth } from '../../contexts/AuthContext';
 import Avatar from '../common/Avatar';
 import VoiceChat from './VoiceChat';
+import GameChat from './GameChat';
 
 // Game categories and locations
 const categories = {
@@ -42,10 +43,6 @@ export default function GameRoom() {
   const [isHost, setIsHost] = useState(false);
   const [gameStarted, setGameStarted] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState(null);
-
-  // Chat state
-  const [messages, setMessages] = useState([]);
-  const [newMessage, setNewMessage] = useState("");
 
   useEffect(() => {
     if (!gameId || !currentUser) {
@@ -96,23 +93,10 @@ export default function GameRoom() {
       setLoading(false);
     });
 
-    // Listen for messages
-    const messagesRef = ref(database, `games/${gameId}/messages`);
-    const messagesUnsubscribe = onValue(messagesRef, (snapshot) => {
-      if (!isSubscribed) return;
-
-      const messagesData = snapshot.val();
-      if (messagesData) {
-        const messagesList = Object.values(messagesData);
-        setMessages(messagesList.sort((a, b) => a.timestamp - b.timestamp));
-      }
-    });
-
     // Cleanup function
     return () => {
       isSubscribed = false;
       unsubscribe();
-      messagesUnsubscribe();
       if (game && currentUser) {
         const playerRef = ref(
           database,
@@ -184,26 +168,6 @@ export default function GameRoom() {
       console.error("Error leaving game:", error);
     }
   };
-
-  const sendMessage = async (e) => {
-    e.preventDefault();
-    if (!newMessage.trim() || !currentUser) return;
-
-    const messagesRef = ref(database, `games/${gameId}/messages`);
-    try {
-      await push(messagesRef, {
-        text: newMessage,
-        userId: currentUser.uid,
-        userName: currentUser.displayName || currentUser.email,
-        userPhoto: currentUser.photoURL,
-        timestamp: Date.now(),
-      });
-      setNewMessage("");
-    } catch (error) {
-      console.error("Error sending message:", error);
-    }
-  };
-  // ... continuing from Part 1
 
   if (loading) return <div>Loading...</div>;
   if (error) return <div>Error: {error}</div>;
@@ -410,70 +374,12 @@ export default function GameRoom() {
             {/* Voice Chat */}
             <VoiceChat gameId={gameId} currentUser={currentUser} />
 
-            {/* Text Chat */}
-            <div className="bg-white rounded-lg shadow-md h-[400px] flex flex-col">
-              <div className="flex-1 overflow-y-auto p-4 space-y-4">
-                {messages.map((message, index) => (
-                  <div
-                    key={index}
-                    className={`flex items-start space-x-3 ${
-                      message.userId === currentUser.uid ? "justify-end" : ""
-                    }`}
-                  >
-                    {message.userId !== currentUser.uid && (
-                      <Avatar
-                        user={{
-                          displayName: message.userName,
-                          photoURL: message.userPhoto,
-                        }}
-                        size="sm"
-                      />
-                    )}
-                    <div
-                      className={`flex flex-col ${
-                        message.userId === currentUser.uid
-                          ? "items-end"
-                          : "items-start"
-                      }`}
-                    >
-                      <span className="text-xs text-gray-500">
-                        {message.userName}
-                      </span>
-                      <div
-                        className={`px-4 py-2 rounded-lg ${
-                          message.userId === currentUser.uid
-                            ? "bg-blue-500 text-white"
-                            : "bg-gray-100 text-gray-800"
-                        }`}
-                      >
-                        {message.text}
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              {/* Chat Input */}
-              <form
-                onSubmit={sendMessage}
-                className="p-4 bg-gray-100 rounded-b-lg"
-              >
-                <div className="flex space-x-2">
-                  <input
-                    type="text"
-                    value={newMessage}
-                    onChange={(e) => setNewMessage(e.target.value)}
-                    placeholder="Type a message..."
-                    className="flex-1 px-4 py-2 rounded border border-gray-300 focus:outline-none focus:border-blue-500"
-                  />
-                  <button
-                    type="submit"
-                    className="px-6 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 transition"
-                  >
-                    Send
-                  </button>
-                </div>
-              </form>
+            {/* Text Chat - Replace the old chat implementation with GameChat component */}
+            <div className="bg-white rounded-lg shadow-md h-[400px]">
+              <GameChat 
+                gameId={gameId} 
+                currentUser={currentUser} 
+              />
             </div>
           </div>
         </div>
