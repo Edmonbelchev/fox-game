@@ -1,18 +1,13 @@
 import { createContext, useContext, useState, useEffect } from 'react';
+import { auth } from '../firebase/config';
 import { 
-  auth,
-  database 
-} from '../firebase/config';
-import { 
-  createUserWithEmailAndPassword,
-  signInWithEmailAndPassword,
-  signOut,
   onAuthStateChanged,
-  updateProfile,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  signOut,
   GoogleAuthProvider,
   signInWithPopup
 } from 'firebase/auth';
-import { ref, set } from 'firebase/database';
 
 const AuthContext = createContext();
 
@@ -24,23 +19,8 @@ export function AuthProvider({ children }) {
   const [currentUser, setCurrentUser] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  async function signup(email, password, displayName) {
-    try {
-      const result = await createUserWithEmailAndPassword(auth, email, password);
-      await updateProfile(result.user, { displayName });
-      
-      // Create user profile in database
-      const userRef = ref(database, `users/${result.user.uid}`);
-      await set(userRef, {
-        email,
-        displayName,
-        createdAt: Date.now()
-      });
-      
-      return result;
-    } catch (error) {
-      throw error;
-    }
+  function signup(email, password) {
+    return createUserWithEmailAndPassword(auth, email, password);
   }
 
   function login(email, password) {
@@ -51,19 +31,13 @@ export function AuthProvider({ children }) {
     return signOut(auth);
   }
 
-  const loginWithGoogle = async () => {
+  function loginWithGoogle() {
     const provider = new GoogleAuthProvider();
-    try {
-      const result = await signInWithPopup(auth, provider);
-      return result.user;
-    } catch (error) {
-      throw error;
-    }
-  };
+    return signInWithPopup(auth, provider);
+  }
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
-      console.log('Auth state changed:', user ? user.uid : 'No user');
       setCurrentUser(user);
       setLoading(false);
     });
