@@ -157,46 +157,47 @@ export default function GameRoom() {
     return () => unsubscribe();
   }, [gameId, game?.status]);
 
-  // Handle Play Again button click
+  // Modify handlePlayAgain to properly cleanup the old game
   const handlePlayAgain = async () => {
     if (!currentUser?.uid || !gameId) return;
 
     try {
       if (game.players[currentUser.uid].isHost) {
-        // Hide popup immediately when host creates new game
+        // Hide popup immediately
         setShowEndGamePopup(false);
         setVotingPhase('none');
         setVotingResult(null);
+        setPlayAgainPlayers({});
 
         // Create new game room
         const newGameRef = push(ref(database, 'games'));
         const newGameId = newGameRef.key;
 
-        // Get all players who want to play again
+        // Set up players for new game
         const playersForNewGame = {};
-        
-        // Add host first
-        playersForNewGame[currentUser.uid] = {
-          name: currentUser.displayName || currentUser.email,
-          email: currentUser.email || '',
-          photoURL: currentUser.photoURL || null,
-          isReady: false,
-          isHost: true
-        };
-
-        // Add all players who clicked play again
         Object.keys(playAgainPlayers).forEach((playerId) => {
-          if (playerId !== currentUser.uid) {
-            const player = game.players[playerId];
+          const player = game.players[playerId];
+          if (player) {
             playersForNewGame[playerId] = {
               name: player.name || player.email || 'Unknown Player',
               email: player.email || '',
               photoURL: player.photoURL || null,
               isReady: false,
-              isHost: false
+              isHost: playerId === currentUser.uid
             };
           }
         });
+
+        // Add host if not already included
+        if (!playersForNewGame[currentUser.uid]) {
+          playersForNewGame[currentUser.uid] = {
+            name: currentUser.displayName || currentUser.email,
+            email: currentUser.email || '',
+            photoURL: currentUser.photoURL || null,
+            isReady: false,
+            isHost: true
+          };
+        }
 
         // Set up new game
         const newGameData = {
@@ -211,22 +212,26 @@ export default function GameRoom() {
           createdAt: Date.now()
         };
 
-        // Create new game and update old game atomically
+        // Update both games atomically
         const updates = {};
         updates[`/games/${newGameId}`] = newGameData;
-        updates[`/games/${gameId}/redirectTo`] = newGameId;
-        updates[`/games/${gameId}/status`] = 'redirecting'; // Add status to prevent popup from showing
-        
+        updates[`/games/${gameId}`] = {
+          ...game,
+          status: 'redirecting',
+          redirectTo: newGameId,
+          playAgainRequests: null,  // Clear play again requests
+          votingResult: null,       // Clear voting result
+          votes: null              // Clear votes
+        };
+
         const dbRef = ref(database);
         await update(dbRef, updates);
-
       } else {
-        // Non-host players mark themselves as ready
+        // Non-host players just mark themselves as ready
         const playAgainRef = ref(database, `games/${gameId}/playAgainRequests/${currentUser.uid}`);
         await set(playAgainRef, {
           timestamp: Date.now(),
-          playerName: currentUser.displayName || currentUser.email,
-          photoURL: currentUser.photoURL || null
+          playerName: currentUser.displayName || currentUser.email
         });
       }
     } catch (error) {
@@ -234,6 +239,7 @@ export default function GameRoom() {
     }
   };
 
+  // Modify the initial game join effect
   useEffect(() => {
     if (!gameId || !currentUser) {
       navigate("/");
@@ -260,24 +266,31 @@ export default function GameRoom() {
 
       // If player is not in the game, add them
       if (!gameData.players?.[currentUser.uid]) {
-        const playerRef = ref(
-          database,
-          `games/${gameId}/players/${currentUser.uid}`
-        );
+        const playerRef = ref(database, `games/${gameId}/players/${currentUser.uid}`);
+        const playerData = {
+          name: currentUser.displayName || currentUser.email,
+          email: currentUser.email,
+          photoURL: currentUser.photoURL,
+          isReady: false,
+          isHost: isPlayerHost,
+          joinedAt: Date.now(),
+        };
+
         try {
-          await update(playerRef, {
-            name: currentUser.displayName || currentUser.email,
-            email: currentUser.email,
-            photoURL: currentUser.photoURL,
-            isReady: false,
-            isHost: isPlayerHost,
-            joinedAt: Date.now(),
-          });
+          // Update the game data immediately with the new player
+          gameData.players = {
+            ...gameData.players,
+            [currentUser.uid]: playerData
+          };
+          
+          // Update Firebase
+          await update(playerRef, playerData);
         } catch (error) {
           console.error("Error joining game:", error);
         }
       }
 
+      // Set game state after ensuring player is added
       setGame(gameData);
       setGameStarted(gameData.status === "playing");
       setLoading(false);
@@ -288,14 +301,16 @@ export default function GameRoom() {
       isSubscribed = false;
       unsubscribe();
       if (game && currentUser) {
-        const playerRef = ref(
-          database,
-          `games/${gameId}/players/${currentUser.uid}`
-        );
+        const playerRef = ref(database, `games/${gameId}/players/${currentUser.uid}`);
         remove(playerRef).catch(console.error);
       }
     };
   }, [gameId, currentUser, navigate]);
+
+  // Add a debug effect to monitor game state changes
+  useEffect(() => {
+    console.log('Game state updated:', game);
+  }, [game]);
 
   // Timer effect
   useEffect(() => {
@@ -499,6 +514,10 @@ export default function GameRoom() {
       timestamp: Date.now(),
       playerName: currentUser.displayName || currentUser.email
     });
+
+    // Optional: Play a notification sound
+    const audio = new Audio('/path/to/notification-sound.mp3'); // Add your sound file
+    audio.play().catch(e => console.log('Audio play failed:', e));
   };
 
   // Add effect to listen for vote call requests
@@ -545,7 +564,7 @@ export default function GameRoom() {
     return () => unsubscribe();
   }, [gameId]);
 
-  // Handle redirection for all players
+  // Update the effect that handles redirection
   useEffect(() => {
     if (!gameId || !game?.redirectTo || !currentUser) return;
 
@@ -700,6 +719,16 @@ export default function GameRoom() {
     }
   }, [game?.status]);
 
+  // Add effect to handle game status changes
+  useEffect(() => {
+    if (game?.status === 'waiting' || game?.status === 'redirecting') {
+      setShowEndGamePopup(false);
+      setVotingPhase('none');
+      setVotingResult(null);
+      setPlayAgainPlayers({});
+    }
+  }, [game?.status]);
+
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-screen">
@@ -774,39 +803,195 @@ export default function GameRoom() {
                       </>
                     )}
                   </div>
+
+                  <div className="p-4 rounded-lg bg-white shadow">
+                    <h2 className="text-lg font-semibold mb-3">Players</h2>
+                    <div className="grid gap-2">
+                      {Object.entries(game.players).map(([playerId, player]) => (
+                        <div 
+                          key={playerId}
+                          className={`flex items-center justify-between p-3 rounded-lg transition-all ${
+                            eliminatedPlayers[playerId] 
+                              ? 'bg-red-50 opacity-75' 
+                              : 'bg-gray-50 hover:bg-gray-100'
+                          }`}
+                        >
+                          <div className="flex items-center space-x-3">
+                            <Avatar
+                              user={{
+                                displayName: player.name,
+                                photoURL: player.photoURL,
+                              }}
+                              size="sm"
+                            />
+                            <div className="flex flex-col">
+                              <span className="font-medium">
+                                {player.name}
+                                {playerId === currentUser.uid && ' (You)'}
+                              </span>
+                              {eliminatedPlayers[playerId] && (
+                                <span className="text-sm text-red-600 font-medium">
+                                  Eliminated
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          
+                          {/* Show when player was voted out */}
+                          {eliminatedPlayers[playerId] && game.votingResult && (
+                            <div className="text-sm text-gray-500">
+                              Voted out in Round {game.votingResult.roundNumber}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="text-sm text-gray-600">
+                    Active Players: {
+                      Object.keys(game.players).filter(
+                        playerId => !eliminatedPlayers[playerId]
+                      ).length
+                    } / {Object.keys(game.players).length}
+                  </div>
+
+                  {/* Vote Requests Display */}
+                  {Object.keys(voteCallRequests).length > 0 && (
+                    <div className="p-4 bg-yellow-50 rounded-lg animate-pulse">
+                      <h3 className="text-lg font-semibold mb-2 flex items-center">
+                        Vote Requests 🗳️
+                      </h3>
+                      <div className="space-y-2">
+                        {Object.entries(voteCallRequests)
+                          .filter(([playerId]) => !eliminatedPlayers[playerId])
+                          .map(([playerId, request]) => (
+                            <div 
+                              key={playerId} 
+                              className="flex items-center space-x-2 text-sm"
+                            >
+                              <span>🙋</span>
+                              <span className="font-medium">
+                                {game.players[playerId]?.name}
+                              </span>
+                              <span className="text-gray-500">
+                                wants to vote!
+                              </span>
+                            </div>
+                          ))}
+                        <div className="mt-3 text-sm text-gray-600">
+                          {Object.keys(voteCallRequests).filter(playerId => !eliminatedPlayers[playerId]).length} / {
+                            Object.keys(game.players).filter(playerId => !eliminatedPlayers[playerId]).length
+                          } active players requested a vote
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Vote Call Button with emoji */}
+                  {showVoteCallButton && !eliminatedPlayers[currentUser.uid] && (
+                    <button
+                      onClick={requestVoteCall}
+                      disabled={voteCallRequests[currentUser?.uid]}
+                      className={`px-4 py-2 rounded-lg flex items-center space-x-2 ${
+                        voteCallRequests[currentUser?.uid]
+                          ? 'bg-gray-300 cursor-not-allowed'
+                          : 'bg-blue-500 hover:bg-blue-600 text-white'
+                      }`}
+                    >
+                      <span>
+                        {voteCallRequests[currentUser?.uid] ? '✋' : '🗳️'}
+                      </span>
+                      <span>
+                        {voteCallRequests[currentUser?.uid] ? 'Vote Requested' : 'Request Vote'}
+                      </span>
+                    </button>
+                  )}
+
+                  {/* Active Vote Requests Floating Indicator */}
+                  {gameStarted && Object.keys(voteCallRequests).length > 0 && (
+                    <div className="fixed bottom-4 right-4">
+                      <div className="bg-white rounded-lg shadow-lg p-4">
+                        <div className="text-lg font-semibold mb-2 flex items-center space-x-2">
+                          <span>🗳️</span>
+                          <span>Active Vote Requests</span>
+                        </div>
+                        <div className="space-y-1">
+                          {Object.entries(voteCallRequests)
+                            .filter(([playerId]) => !eliminatedPlayers[playerId])
+                            .map(([playerId, request]) => (
+                              <div 
+                                key={playerId}
+                                className="flex items-center space-x-2 text-sm"
+                              >
+                                <span>🙋</span>
+                                <span>{game.players[playerId]?.name}</span>
+                              </div>
+                            ))}
+                        </div>
+                        <div className="mt-2 text-sm text-gray-600">
+                          {Object.keys(voteCallRequests).filter(playerId => !eliminatedPlayers[playerId]).length} / {
+                            Object.keys(game.players).filter(playerId => !eliminatedPlayers[playerId]).length
+                          } players ready to vote
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
               ) : (
                 <>
                   {/* Players List */}
-                  <div className="grid gap-4 md:grid-cols-2 mb-6">
-                    {Object.entries(game.players).map(([playerId, player]) => (
-                      <div
-                        key={playerId}
-                        className={`flex items-center space-x-3 p-4 ${
-                          eliminatedPlayers[playerId]
-                            ? 'bg-gray-200 opacity-50'
-                            : 'bg-gray-50'
-                        } rounded-lg`}
-                      >
-                        <Avatar
-                          user={{
-                            displayName: player.name,
-                            email: player.email,
-                            photoURL: player.photoURL,
-                          }}
-                          size="md"
-                        />
-                        <div className="flex-1">
-                          <div className="font-medium">
-                            {player.name}
-                            {eliminatedPlayers[playerId] && ' (Eliminated)'}
+                  <div className="space-y-4">
+                    <h2 className="text-xl font-semibold">Players</h2>
+                    <div className="grid gap-2">
+                      {Object.entries(game.players).map(([playerId, player]) => (
+                        <div 
+                          key={playerId}
+                          className={`flex items-center justify-between p-3 rounded-lg ${
+                            player.isReady ? 'bg-green-50' : 'bg-gray-50'
+                          }`}
+                        >
+                          <div className="flex items-center space-x-3">
+                            <Avatar
+                              user={{
+                                displayName: player.name,
+                                photoURL: player.photoURL,
+                              }}
+                              size="sm"
+                            />
+                            <span className="font-medium">
+                              {player.name}
+                              {playerId === currentUser.uid && ' (You)'}
+                              {player.isHost && ' (Host)'}
+                            </span>
                           </div>
-                          <div className="text-sm text-gray-500">
-                            {player.isHost ? "Host" : "Player"}
+                          <div className="flex items-center space-x-2">
+                            {player.isReady && (
+                              <span className="text-green-600 text-sm font-medium">
+                                Ready
+                              </span>
+                            )}
+                            {!player.isHost && !player.isReady && (
+                              <span className="text-gray-500 text-sm">
+                                Not Ready
+                              </span>
+                            )}
+                            {playerId === currentUser.uid && !player.isHost && (
+                              <button
+                                onClick={toggleReady}
+                                className={`px-3 py-1 rounded text-sm font-medium ${
+                                  player.isReady
+                                    ? 'bg-red-100 text-red-700 hover:bg-red-200'
+                                    : 'bg-green-100 text-green-700 hover:bg-green-200'
+                                }`}
+                              >
+                                {player.isReady ? 'Cancel' : 'Ready'}
+                              </button>
+                            )}
                           </div>
                         </div>
-                      </div>
-                    ))}
+                      ))}
+                    </div>
                   </div>
 
                   {/* Game Controls */}
@@ -1052,7 +1237,11 @@ export default function GameRoom() {
       )}
 
       {/* Voting Result Popup */}
-      {game?.status === 'ended' && votingPhase === 'result' && !game?.redirectTo && game?.status !== 'redirecting' && (
+      {game?.status === 'ended' && 
+        votingPhase === 'result' && 
+        !game?.redirectTo && 
+        game?.status !== 'redirecting' && 
+        showEndGamePopup && (
         <EndGamePopup
           game={game}
           currentUser={currentUser}
